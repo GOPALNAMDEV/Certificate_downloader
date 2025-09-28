@@ -116,10 +116,14 @@ def send_otp(email: str) -> None:
     mail.send(msg)
 
 # ---------------- AUTO DB INIT ----------------
-@app.before_first_request
-def setup_db():
-    init_db()
+initialized = False
 
+@app.before_request
+def do_once():
+    global initialized
+    if not initialized:
+        # your one-time setup code here
+        initialized = True
 # ---------------- ROUTES ----------------
 @app.route('/')
 def index():
