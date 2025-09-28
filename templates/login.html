@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Login</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/js/all.min.js" crossorigin="anonymous"></script> 
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Poppins', sans-serif;
+        }
+
+        body {
+            background: linear-gradient(to right, #0072ff, #00c6ff);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 450px;
+            background: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0px 4px 10px rgba(0, 0, 0, 0.2);
+            text-align: center;
+        }
+
+        h2 {
+            font-size: 22px;
+            color: #0072ff;
+            margin-bottom: 15px;
+        }
+
+        label {
+            font-size: 14px;
+            color: #666;
+            display: block;
+            margin-bottom: 6px;
+            text-align: left;
+            font-weight: 600;
+        }
+
+        .input-container, .password-container {
+            width: 100%;
+            margin-bottom: 15px;
+        }
+
+        .input-container input, .password-container input {
+            width: 100%;
+            padding: 10px;
+            border: 1.5px solid #0072ff;
+            border-radius: 5px;
+            font-size: 14px;
+            background-color: #f8f9fa;
+            transition: 0.3s;
+            outline: none;
+        }
+
+        .input-container input:focus, .password-container input:focus {
+            border-color: #00c6ff;
+            box-shadow: 0 0 4px rgba(0, 114, 255, 0.4);
+        }
+
+        .password-container {
+            position: relative;
+        }
+
+        .password-container button {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            color: #0072ff;
+        }
+
+        .password-container button:hover {
+            color: #00c6ff;
+        }
+
+        input[type="submit"] {
+            width: 100%;
+            background: linear-gradient(to right, #0072ff, #00c6ff);
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            border: none;
+            padding: 12px;
+            border-radius: 5px;
+            font-size: 14px;
+            transition: 0.3s;
+        }
+
+        input[type="submit"]:hover {
+            background: linear-gradient(to right, #00c6ff, #0072ff);
+            box-shadow: 0 3px 8px rgba(0, 114, 255, 0.4);
+        }
+
+        .error {
+            color: red;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+
+        .footer {
+            margin-top: 15px;
+            font-size: 12px;
+            color: #777;
+            text-align: center;
+        }
+
+        .footer a {
+            color: #0072ff;
+            text-decoration: none;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h2>Admin Login</h2>
+        
+        {% if error %}
+            <div class="error">{{ error }}</div>
+        {% endif %}
+
+        <form method="POST" action="{{ url_for('login') }}">
+            <label for="username">Username:</label>
+            <div class="input-container">
+                <input type="text" id="username" name="username" required>
+            </div>
+
+            <label for="password">Password:</label>
+            <div class="password-container">
+                <input type="password" id="password" name="password" required>
+                <button type="button" id="togglePassword">
+                    <i id="eyeIcon" class="fas fa-eye"></i>
+                </button>
+            </div>
+
+            <input type="submit" value="Login">
+        </form>
+
+        <div class="footer">
+            <p>&copy; 2025 RecruitPlus. <a href="{{ url_for('index') }}">Back to Home</a></p>
+        </div>
+    </div>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function () {
+        document.getElementById("togglePassword").addEventListener("click", function() {
+            var passwordField = document.getElementById("password");
+            var eyeIcon = document.getElementById("eyeIcon");
+
+            if (passwordField.type === "password") {
+                passwordField.type = "text";
+                eyeIcon.classList.remove("fa-eye");
+                eyeIcon.classList.add("fa-eye-slash");
+            } else {
+                passwordField.type = "password";
+                eyeIcon.classList.remove("fa-eye-slash");
+                eyeIcon.classList.add("fa-eye");
+            }
+        });
+    });
+</script>
+
+</body>
+</html>
