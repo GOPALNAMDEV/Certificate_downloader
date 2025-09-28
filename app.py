@@ -8,7 +8,6 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from flask_mail import Mail, Message
 from dotenv import load_dotenv
 
-
 # ---------------- LOAD ENV ----------------
 load_dotenv()
 
@@ -27,31 +26,35 @@ app.config['MAIL_USERNAME'] = os.environ.get("MAIL_USERNAME")
 app.config['MAIL_PASSWORD'] = os.environ.get("MAIL_PASSWORD")
 app.config['MAIL_USE_TLS'] = False
 app.config['MAIL_USE_SSL'] = True
-
 mail = Mail(app)
 
 # ---------------- OTP STORE ----------------
 otp_store = {}
 
 # ---------------- DATABASE PATH ----------------
-DB_PATH = "candidates.db"
+DB_PATH = os.path.join(os.path.dirname(__file__), "candidates.db")
 
 # ---------------- DATABASE FUNCTIONS ----------------
-def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS candidates (
-                gmail TEXT,
-                name TEXT,
-                course TEXT,
-                title TEXT,
-                certificate_name TEXT,
-                certificate_data TEXT,
-                PRIMARY KEY (gmail, title)
-            )
-        ''')
-        conn.commit()
+def init_db() -> None:
+    """Initialize the candidates table."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS candidates (
+                    gmail TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    course TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    certificate_name TEXT NOT NULL,
+                    certificate_data TEXT NOT NULL,
+                    PRIMARY KEY (gmail, title)
+                )
+            ''')
+            conn.commit()
+            print("✅ Database initialized successfully.")
+    except sqlite3.Error as e:
+        print(f"⚠️ Database error: {e}")
 
 def get_all_candidates():
     try:
@@ -63,7 +66,7 @@ def get_all_candidates():
         print(f"Error fetching candidates: {e}")
         return []
 
-def get_candidate_certificates(gmail):
+def get_candidate_certificates(gmail: str):
     try:
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
@@ -75,8 +78,8 @@ def get_candidate_certificates(gmail):
     except sqlite3.Error as e:
         print(f"Error fetching certificates: {e}")
         return []
-    
-def get_certificate_data(gmail, title):
+
+def get_certificate_data(gmail: str, title: str):
     try:
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
@@ -87,7 +90,7 @@ def get_certificate_data(gmail, title):
         return None
 
 # ---------------- EMAIL OTP FUNCTION ----------------
-def send_otp(email):
+def send_otp(email: str) -> None:
     otp = random.randint(100000, 999999)
     otp_store[email] = otp
     html_body = f"""
@@ -111,6 +114,11 @@ def send_otp(email):
         html=html_body
     )
     mail.send(msg)
+
+# ---------------- AUTO DB INIT ----------------
+@app.before_first_request
+def setup_db():
+    init_db()
 
 # ---------------- ROUTES ----------------
 @app.route('/')
@@ -174,9 +182,7 @@ def upload_certificate():
     if not gmail or not name or not course or not title or not file:
         return "Error: All fields are required!", 400
 
-    # Convert file to full base64 string
-    file_data = file.read()
-    encoded_data = base64.b64encode(file_data).decode('utf-8')
+    encoded_data = base64.b64encode(file.read()).decode('utf-8')
 
     try:
         with sqlite3.connect(DB_PATH) as conn:
@@ -216,6 +222,7 @@ def delete_candidate(gmail):
 def logout():
     session.pop('admin_logged_in', None)
     return redirect(url_for('index'))
+
 @app.route("/view-certificate/<gmail>/<title>")
 def view_certificate(gmail, title):
     try:
@@ -236,9 +243,7 @@ def view_certificate(gmail, title):
     else:
         return "Certificate not found", 404
 
-
 # ---------------- RUN ----------------
 if __name__ == '__main__':
-    init_db()
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=True)
