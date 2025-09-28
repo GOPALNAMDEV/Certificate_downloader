@@ -122,8 +122,15 @@
             {% for candidate in candidates %}
             <tr>
                 <td>{{ candidate[0] }}</td> <!-- Gmail -->
-                <td><a href="{{ url_for('view_certificate', filename=candidate[4]) }}" target="_blank">View</a>
-                </td>
+                <td>
+    <a href="{{ url_for('view_certificate', gmail=candidate[0], title=candidate[3]) }}" target="_blank">
+        View
+    </a>
+    <a href="{{ url_for('download_certificate', gmail=candidate[0], title=candidate[3]) }}">
+                        Download
+                    </a>
+</td>
+
                 <td>
                     <a href="{{ url_for('delete_candidate', gmail=candidate[0]) }}" style="color: red;">Delete</a>
                 </td>

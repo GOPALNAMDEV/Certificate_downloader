@@ -178,18 +178,23 @@ button:hover { transform:scale(1.05); box-shadow:0 8px 20px rgba(0,114,255,0.25)
     {% if certificates %}
       <p class="msg success"><i class="fa-solid fa-circle-check"></i> Certificates found!</p>
       <div class="certificate-list">
-        {% for cert in certificates %}
-          <div class="cert-card">
-            <h3>{{ cert[3] }}</h3>
-            <p><strong>Name:</strong> {{ cert[1] }}</p>
-            <p><strong>Course:</strong> {{ cert[2] }}</p>
-            <div class="cert-actions">
-              <a href="{{ url_for('download_certificate', filename=cert[0]) }}"><i class="fa-solid fa-download"></i> Download</a>
-              <a href="{{ url_for('view_certificate', filename=cert[0]) }}" target="_blank"><i class="fa-solid fa-eye"></i> View</a>
-            </div>
-          </div>
-        {% endfor %}
-      </div>
+{% for cert in certificates %}
+  <div class="cert-card">
+    <h3>{{ cert[0] }}</h3> <!-- title -->
+    <p><strong>Name:</strong> {{ cert[1] }}</p>
+    <p><strong>Course:</strong> {{ cert[2] }}</p>
+    <div class="cert-actions">
+      <a href="{{ url_for('download_certificate', gmail=gmail, title=cert[0]) }}">
+        <i class="fa-solid fa-download"></i> Download
+      </a>
+      <a href="{{ url_for('view_certificate', gmail=gmail, title=cert[0]) }}" target="_blank">
+        <i class="fa-solid fa-eye"></i> View
+      </a>
+    </div>
+  </div>
+{% endfor %}
+
+</div>
     {% else %}
       <p class="msg error"><i class="fa-solid fa-triangle-exclamation"></i> No records found for this Gmail.</p>
     {% endif %}

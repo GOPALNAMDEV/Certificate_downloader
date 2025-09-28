@@ -1,22 +1,22 @@
 import os
 import sqlite3
-import uuid
+import base64
 import random
-from flask import Flask, request, render_template, redirect, url_for, session, send_from_directory
+import io
+from flask import Flask, request, render_template, redirect, url_for, session, send_file, Response
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_mail import Mail, Message
 from dotenv import load_dotenv
 
+
 # ---------------- LOAD ENV ----------------
-load_dotenv()  # Load .env variables
+load_dotenv()
 
 # ---------------- FLASK SETUP ----------------
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY")
+app.secret_key = os.environ.get("SECRET_KEY", "supersecretkey")
 
-UPLOAD_FOLDER = 'candidates'
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
+# ---------------- ADMIN ----------------
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "recruitplusindia")
 ADMIN_PASSWORD_HASH = generate_password_hash(os.environ.get("ADMIN_PASSWORD", "Satendra@369N"))
 
@@ -30,19 +30,34 @@ app.config['MAIL_USE_SSL'] = True
 
 mail = Mail(app)
 
-# ---------------- OTP STORAGE ----------------
+# ---------------- OTP STORE ----------------
 otp_store = {}
 
-# ---------------- CREATE UPLOAD DIR ----------------
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+# ---------------- DATABASE PATH ----------------
+DB_PATH = "candidates.db"
 
 # ---------------- DATABASE FUNCTIONS ----------------
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS candidates (
+                gmail TEXT,
+                name TEXT,
+                course TEXT,
+                title TEXT,
+                certificate_name TEXT,
+                certificate_data TEXT,
+                PRIMARY KEY (gmail, title)
+            )
+        ''')
+        conn.commit()
+
 def get_all_candidates():
     try:
-        with sqlite3.connect('candidates.db') as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT gmail, name, course, title, certificate_path FROM candidates")
+            cursor.execute("SELECT gmail, name, course, title, certificate_name, certificate_data FROM candidates")
             return cursor.fetchall()
     except sqlite3.Error as e:
         print(f"Error fetching candidates: {e}")
@@ -50,22 +65,31 @@ def get_all_candidates():
 
 def get_candidate_certificates(gmail):
     try:
-        with sqlite3.connect('candidates.db') as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT certificate_path, name, course, title FROM candidates WHERE gmail = ?", (gmail,))
+            cursor.execute(
+                "SELECT title, name, course FROM candidates WHERE gmail = ?",
+                (gmail,)
+            )
             return cursor.fetchall()
     except sqlite3.Error as e:
         print(f"Error fetching certificates: {e}")
         return []
-
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in {'pdf', 'jpg', 'jpeg', 'png'}
+    
+def get_certificate_data(gmail, title):
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT certificate_name, certificate_data FROM candidates WHERE gmail=? AND title=?", (gmail, title))
+            return cursor.fetchone()
+    except sqlite3.Error as e:
+        print(f"Error fetching certificate data: {e}")
+        return None
 
 # ---------------- EMAIL OTP FUNCTION ----------------
 def send_otp(email):
     otp = random.randint(100000, 999999)
     otp_store[email] = otp
-
     html_body = f"""
     <html>
     <body style="font-family:'Poppins',sans-serif;background:#f0f4ff;padding:20px;text-align:center;">
@@ -140,58 +164,81 @@ def dashboard():
 def upload_certificate():
     if "admin_logged_in" not in session:
         return redirect(url_for('login'))
+    
     gmail = request.form.get('gmail')
     name = request.form.get('name')
     course = request.form.get('course')
     title = request.form.get('title')
     file = request.files.get('certificate')
+
     if not gmail or not name or not course or not title or not file:
         return "Error: All fields are required!", 400
-    if not allowed_file(file.filename):
-        return "Error: Invalid file type!", 400
-    filename = f"{uuid.uuid4().hex}_{file.filename}"
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    file.save(file_path)
+
+    # Convert file to full base64 string
+    file_data = file.read()
+    encoded_data = base64.b64encode(file_data).decode('utf-8')
+
     try:
-        with sqlite3.connect('candidates.db') as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
-            cursor.execute("INSERT INTO candidates (gmail, name, course, certificate_path, title) VALUES (?, ?, ?, ?, ?)", 
-                           (gmail, name, course, filename, title))
+            cursor.execute('''
+                INSERT OR REPLACE INTO candidates 
+                (gmail, name, course, title, certificate_name, certificate_data) 
+                VALUES (?, ?, ?, ?, ?, ?)''',
+                           (gmail, name, course, title, file.filename, encoded_data))
             conn.commit()
     except sqlite3.Error as e:
         return f"Database error: {e}", 500
+
+    return redirect(url_for('dashboard'))
+
+@app.route('/download-certificate/<gmail>/<title>')
+def download_certificate(gmail, title):
+    cert = get_certificate_data(gmail, title)
+    if not cert:
+        return "Certificate not found", 404
+    name, data = cert
+    decoded = base64.b64decode(data.encode('utf-8'))
+    return send_file(io.BytesIO(decoded), as_attachment=True, download_name=name)
+
+@app.route('/delete-candidate/<gmail>')
+def delete_candidate(gmail):
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM candidates WHERE gmail = ?", (gmail,))
+            conn.commit()
+    except sqlite3.Error as e:
+        print(f"Error deleting candidate: {e}")
     return redirect(url_for('dashboard'))
 
 @app.route('/logout')
 def logout():
     session.pop('admin_logged_in', None)
     return redirect(url_for('index'))
-
-@app.route('/download-certificate/<filename>')
-def download_certificate(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename, as_attachment=True)
-
-@app.route('/view_certificate/<path:filename>')
-def view_certificate(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
-
-@app.route('/delete-candidate/<gmail>')
-def delete_candidate(gmail):
+@app.route("/view-certificate/<gmail>/<title>")
+def view_certificate(gmail, title):
     try:
-        certificates = get_candidate_certificates(gmail)
-        with sqlite3.connect('candidates.db') as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM candidates WHERE gmail = ?", (gmail,))
-            conn.commit()
-        for cert in certificates:
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], cert[0])
-            if os.path.exists(file_path):
-                os.remove(file_path)
+            cursor.execute(
+                "SELECT certificate_name, certificate_data FROM candidates WHERE gmail=? AND title=?",
+                (gmail, title)
+            )
+            result = cursor.fetchone()
     except sqlite3.Error as e:
-        print(f"Error deleting candidate: {e}")
-    return redirect(url_for('dashboard'))
+        return f"Database error: {e}", 500
+
+    if result and result[1]:
+        name, encoded_data = result
+        pdf_data = base64.b64decode(encoded_data.encode("utf-8"))
+        return Response(pdf_data, mimetype="application/pdf")
+    else:
+        return "Certificate not found", 404
+
 
 # ---------------- RUN ----------------
 if __name__ == '__main__':
+    init_db()
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=True)
