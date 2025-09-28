@@ -2,4 +2,8 @@ Flask==2.3.3
 Werkzeug>=2.3.7
 Flask-Mail==0.9.1
 python-dotenv==1.0.0
+<<<<<<< HEAD
 gunicorn==21.2.0
+=======
+gunicorn==21.2.0
+>>>>>>> 687ce481f73fede6c9c5521aa68555e24bee5599
