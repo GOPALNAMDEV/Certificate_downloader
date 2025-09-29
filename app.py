@@ -3,7 +3,10 @@ import sqlite3
 import base64
 import random
 import io
-from flask import Flask, request, render_template, redirect, url_for, session, send_file, Response
+import time
+from datetime import datetime, timedelta
+from threading import Thread
+from flask import Flask, request, render_template, redirect, url_for, session, send_file, Response, g
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_mail import Mail, Message
 from dotenv import load_dotenv
@@ -13,7 +16,7 @@ load_dotenv()
 
 # ---------------- FLASK SETUP ----------------
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "supersecretkey")
+app.secret_key = os.environ.get("SECRET_KEY", "Gopalnamdev@gmail.comGopal0369Namdev24012004")
 
 # ---------------- ADMIN ----------------
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "recruitplusindia")
@@ -26,73 +29,99 @@ app.config['MAIL_USERNAME'] = os.environ.get("MAIL_USERNAME")
 app.config['MAIL_PASSWORD'] = os.environ.get("MAIL_PASSWORD")
 app.config['MAIL_USE_TLS'] = False
 app.config['MAIL_USE_SSL'] = True
+app.config['MAIL_DEFAULT_SENDER'] = os.environ.get("MAIL_USERNAME")
 mail = Mail(app)
-
-# ---------------- OTP STORE ----------------
-otp_store = {}
 
 # ---------------- DATABASE PATH ----------------
 DB_PATH = os.path.join(os.path.dirname(__file__), "candidates.db")
 
-# ---------------- DATABASE FUNCTIONS ----------------
-def init_db() -> None:
-    """Initialize the candidates table."""
+# ---------------- OTP STORE ----------------
+# {email: {"otp": int, "expires": datetime, "last_sent": datetime}}
+otp_store = {}
+
+# ---------------- DATABASE FUNCTIONS WITH CONNECTION POOLING ----------------
+def get_db():
+    if 'db' not in g:
+        g.db = sqlite3.connect(DB_PATH, check_same_thread=False)
+        g.db.row_factory = sqlite3.Row
+    return g.db
+
+@app.teardown_appcontext
+def close_db(exception):
+    db = g.pop('db', None)
+    if db is not None:
+        db.close()
+
+def init_db():
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS candidates (
-                    gmail TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    course TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    certificate_name TEXT NOT NULL,
-                    certificate_data TEXT NOT NULL,
-                    PRIMARY KEY (gmail, title)
-                )
-            ''')
-            conn.commit()
-            print("✅ Database initialized successfully.")
+        db = get_db()
+        cursor = db.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS candidates (
+                gmail TEXT NOT NULL,
+                name TEXT NOT NULL,
+                course TEXT NOT NULL,
+                title TEXT NOT NULL,
+                certificate_name TEXT NOT NULL,
+                certificate_data TEXT NOT NULL,
+                PRIMARY KEY (gmail, title)
+            )
+        ''')
+        db.commit()
+        print("✅ Database initialized successfully.")
     except sqlite3.Error as e:
         print(f"⚠️ Database error: {e}")
 
 def get_all_candidates():
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT gmail, name, course, title, certificate_name, certificate_data FROM candidates")
-            return cursor.fetchall()
+        db = get_db()
+        cursor = db.cursor()
+        cursor.execute("SELECT gmail, name, course, title, certificate_name, certificate_data FROM candidates")
+        return cursor.fetchall()
     except sqlite3.Error as e:
         print(f"Error fetching candidates: {e}")
         return []
 
 def get_candidate_certificates(gmail: str):
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT title, name, course FROM candidates WHERE gmail = ?",
-                (gmail,)
-            )
-            return cursor.fetchall()
+        db = get_db()
+        cursor = db.cursor()
+        cursor.execute("SELECT title, name, course FROM candidates WHERE gmail = ?", (gmail,))
+        return cursor.fetchall()
     except sqlite3.Error as e:
         print(f"Error fetching certificates: {e}")
         return []
 
 def get_certificate_data(gmail: str, title: str):
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT certificate_name, certificate_data FROM candidates WHERE gmail=? AND title=?", (gmail, title))
-            return cursor.fetchone()
+        db = get_db()
+        cursor = db.cursor()
+        cursor.execute("SELECT certificate_name, certificate_data FROM candidates WHERE gmail=? AND title=?", (gmail, title))
+        return cursor.fetchone()
     except sqlite3.Error as e:
         print(f"Error fetching certificate data: {e}")
         return None
 
-# ---------------- EMAIL OTP FUNCTION ----------------
-def send_otp(email: str) -> None:
+# ---------------- ASYNC EMAIL ----------------
+def send_async_email(app, msg):
+    with app.app_context():
+        try:
+            mail.send(msg)
+        except Exception as e:
+            print(f"Error sending email: {e}")
+
+# ---------------- SEND OTP WITH THROTTLE ----------------
+def send_otp(email: str):
+    now = datetime.utcnow()
+    if email in otp_store and "last_sent" in otp_store[email]:
+        if (now - otp_store[email]["last_sent"]).total_seconds() < 60:
+            print(f"OTP recently sent to {email}, skipping re-send.")
+            return
+
     otp = random.randint(100000, 999999)
-    otp_store[email] = otp
+    expires_at = now + timedelta(minutes=10)
+    otp_store[email] = {"otp": otp, "expires": expires_at, "last_sent": now}
+
     html_body = f"""
     <html>
     <body style="font-family:'Poppins',sans-serif;background:#f0f4ff;padding:20px;text-align:center;">
@@ -107,23 +136,24 @@ def send_otp(email: str) -> None:
     </body>
     </html>
     """
-    msg = Message(
-        subject="Your Certificate Verification Code",
-        sender=app.config['MAIL_USERNAME'],
-        recipients=[email],
-        html=html_body
-    )
-    mail.send(msg)
+    msg = Message(subject="Your Certificate Verification Code", recipients=[email], html=html_body)
+    Thread(target=send_async_email, args=(app, msg)).start()
 
-# ---------------- AUTO DB INIT ----------------
-initialized = False
+# ---------------- OTP CLEANUP THREAD ----------------
+def cleanup_expired_otps(interval_seconds: int = 60):
+    while True:
+        now = datetime.utcnow()
+        expired = [email for email, data in otp_store.items() if now > data["expires"]]
+        for email in expired:
+            otp_store.pop(email)
+        time.sleep(interval_seconds)
 
-@app.before_request
-def do_once():
-    global initialized
-    if not initialized:
-        # your one-time setup code here
-        initialized = True
+Thread(target=cleanup_expired_otps, daemon=True).start()
+
+# ---------------- INIT DB ----------------
+with app.app_context():
+    init_db()
+
 # ---------------- ROUTES ----------------
 @app.route('/')
 def index():
@@ -141,16 +171,23 @@ def check_certificate():
         return render_template('index.html', status='error', gmail=gmail)
 
 @app.route('/verify-otp', methods=['POST'])
-def verify_otp():
+def verify_otp_route():
     gmail = session.get('pending_gmail')
     entered_otp = request.form.get('otp')
-    if gmail and otp_store.get(gmail) and str(otp_store[gmail]) == entered_otp:
-        certificates = get_candidate_certificates(gmail)
-        otp_store.pop(gmail)
-        session.pop('pending_gmail')
-        return render_template('index.html', certificates=certificates, status='success', gmail=gmail)
-    else:
-        return render_template('verify_otp.html', gmail=gmail, error="Invalid OTP. Please try again.")
+    now = datetime.utcnow()
+    otp_entry = otp_store.get(gmail)
+
+    if otp_entry:
+        if now > otp_entry["expires"]:
+            otp_store.pop(gmail)
+            return render_template('verify_otp.html', gmail=gmail, error="OTP expired. Please request a new one.")
+        elif str(otp_entry["otp"]) == entered_otp:
+            certificates = get_candidate_certificates(gmail)
+            otp_store.pop(gmail)
+            session.pop('pending_gmail')
+            return render_template('index.html', certificates=certificates, status='success', gmail=gmail)
+
+    return render_template('verify_otp.html', gmail=gmail, error="Invalid OTP. Please try again.")
 
 # ---------------- ADMIN ROUTES ----------------
 @app.route('/login', methods=['GET', 'POST'])
@@ -176,7 +213,7 @@ def dashboard():
 def upload_certificate():
     if "admin_logged_in" not in session:
         return redirect(url_for('login'))
-    
+
     gmail = request.form.get('gmail')
     name = request.form.get('name')
     course = request.form.get('course')
@@ -189,14 +226,13 @@ def upload_certificate():
     encoded_data = base64.b64encode(file.read()).decode('utf-8')
 
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT OR REPLACE INTO candidates 
-                (gmail, name, course, title, certificate_name, certificate_data) 
-                VALUES (?, ?, ?, ?, ?, ?)''',
-                           (gmail, name, course, title, file.filename, encoded_data))
-            conn.commit()
+        db = get_db()
+        cursor = db.cursor()
+        cursor.execute('''INSERT OR REPLACE INTO candidates 
+            (gmail, name, course, title, certificate_name, certificate_data) 
+            VALUES (?, ?, ?, ?, ?, ?)''',
+                       (gmail, name, course, title, file.filename, encoded_data))
+        db.commit()
     except sqlite3.Error as e:
         return f"Database error: {e}", 500
 
@@ -214,10 +250,10 @@ def download_certificate(gmail, title):
 @app.route('/delete-candidate/<gmail>')
 def delete_candidate(gmail):
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM candidates WHERE gmail = ?", (gmail,))
-            conn.commit()
+        db = get_db()
+        cursor = db.cursor()
+        cursor.execute("DELETE FROM candidates WHERE gmail = ?", (gmail,))
+        db.commit()
     except sqlite3.Error as e:
         print(f"Error deleting candidate: {e}")
     return redirect(url_for('dashboard'))
@@ -229,25 +265,14 @@ def logout():
 
 @app.route("/view-certificate/<gmail>/<title>")
 def view_certificate(gmail, title):
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT certificate_name, certificate_data FROM candidates WHERE gmail=? AND title=?",
-                (gmail, title)
-            )
-            result = cursor.fetchone()
-    except sqlite3.Error as e:
-        return f"Database error: {e}", 500
-
-    if result and result[1]:
-        name, encoded_data = result
+    cert = get_certificate_data(gmail, title)
+    if cert and cert[1]:
+        name, encoded_data = cert
         pdf_data = base64.b64decode(encoded_data.encode("utf-8"))
         return Response(pdf_data, mimetype="application/pdf")
-    else:
-        return "Certificate not found", 404
+    return "Certificate not found", 404
 
 # ---------------- RUN ----------------
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=False)
