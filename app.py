@@ -8,8 +8,9 @@ from datetime import datetime, timedelta
 from threading import Thread
 from flask import Flask, request, render_template, redirect, url_for, session, send_file, Response, g
 from werkzeug.security import generate_password_hash, check_password_hash
-from flask_mail import Mail, Message
 from dotenv import load_dotenv
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail, Email, To, Content
 
 # ---------------- LOAD ENV ----------------
 load_dotenv()
@@ -22,24 +23,17 @@ app.secret_key = os.environ.get("SECRET_KEY", "Gopalnamdev@gmail.comGopal0369Nam
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "recruitplusindia")
 ADMIN_PASSWORD_HASH = generate_password_hash(os.environ.get("ADMIN_PASSWORD", "Satendra@369N"))
 
-# ---------------- MAIL SETUP ----------------
-app.config['MAIL_SERVER'] = os.environ.get("MAIL_SERVER")
-app.config['MAIL_PORT'] = int(os.environ.get("MAIL_PORT", 465))
-app.config['MAIL_USERNAME'] = os.environ.get("MAIL_USERNAME")
-app.config['MAIL_PASSWORD'] = os.environ.get("MAIL_PASSWORD")
-app.config['MAIL_USE_TLS'] = False
-app.config['MAIL_USE_SSL'] = True
-app.config['MAIL_DEFAULT_SENDER'] = os.environ.get("MAIL_USERNAME")
-mail = Mail(app)
+# ---------------- SENDGRID SETUP ----------------
+SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY")
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL")  # Verified sender in SendGrid
 
 # ---------------- DATABASE PATH ----------------
 DB_PATH = os.path.join(os.path.dirname(__file__), "candidates.db")
 
 # ---------------- OTP STORE ----------------
-# {email: {"otp": int, "expires": datetime, "last_sent": datetime}}
-otp_store = {}
+otp_store = {}  # {email: {"otp": int, "expires": datetime, "last_sent": datetime}}
 
-# ---------------- DATABASE FUNCTIONS WITH CONNECTION POOLING ----------------
+# ---------------- DATABASE FUNCTIONS ----------------
 def get_db():
     if 'db' not in g:
         g.db = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -53,65 +47,39 @@ def close_db(exception):
         db.close()
 
 def init_db():
-    try:
-        db = get_db()
-        cursor = db.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS candidates (
-                gmail TEXT NOT NULL,
-                name TEXT NOT NULL,
-                course TEXT NOT NULL,
-                title TEXT NOT NULL,
-                certificate_name TEXT NOT NULL,
-                certificate_data TEXT NOT NULL,
-                PRIMARY KEY (gmail, title)
-            )
-        ''')
-        db.commit()
-        print("✅ Database initialized successfully.")
-    except sqlite3.Error as e:
-        print(f"⚠️ Database error: {e}")
+    db = get_db()
+    db.execute('''CREATE TABLE IF NOT EXISTS candidates (
+                    gmail TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    course TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    certificate_name TEXT NOT NULL,
+                    certificate_data TEXT NOT NULL,
+                    PRIMARY KEY (gmail, title)
+                  )''')
+    db.commit()
 
 def get_all_candidates():
+    db = get_db()
+    return db.execute("SELECT gmail, name, course, title, certificate_name, certificate_data FROM candidates").fetchall()
+
+def get_candidate_certificates(gmail):
+    db = get_db()
+    return db.execute("SELECT title, name, course FROM candidates WHERE gmail=?", (gmail,)).fetchall()
+
+def get_certificate_data(gmail, title):
+    db = get_db()
+    return db.execute("SELECT certificate_name, certificate_data FROM candidates WHERE gmail=? AND title=?", (gmail, title)).fetchone()
+
+# ---------------- ASYNC SENDGRID EMAIL ----------------
+def send_async_email(message):
     try:
-        db = get_db()
-        cursor = db.cursor()
-        cursor.execute("SELECT gmail, name, course, title, certificate_name, certificate_data FROM candidates")
-        return cursor.fetchall()
-    except sqlite3.Error as e:
-        print(f"Error fetching candidates: {e}")
-        return []
+        sg = SendGridAPIClient(SENDGRID_API_KEY)
+        sg.send(message)
+    except Exception as e:
+        print(f"SendGrid error: {e}")
 
-def get_candidate_certificates(gmail: str):
-    try:
-        db = get_db()
-        cursor = db.cursor()
-        cursor.execute("SELECT title, name, course FROM candidates WHERE gmail = ?", (gmail,))
-        return cursor.fetchall()
-    except sqlite3.Error as e:
-        print(f"Error fetching certificates: {e}")
-        return []
-
-def get_certificate_data(gmail: str, title: str):
-    try:
-        db = get_db()
-        cursor = db.cursor()
-        cursor.execute("SELECT certificate_name, certificate_data FROM candidates WHERE gmail=? AND title=?", (gmail, title))
-        return cursor.fetchone()
-    except sqlite3.Error as e:
-        print(f"Error fetching certificate data: {e}")
-        return None
-
-# ---------------- ASYNC EMAIL ----------------
-def send_async_email(app, msg):
-    with app.app_context():
-        try:
-            mail.send(msg)
-        except Exception as e:
-            print(f"Error sending email: {e}")
-
-# ---------------- SEND OTP WITH THROTTLE ----------------
-def send_otp(email: str):
+def send_otp(email):
     now = datetime.utcnow()
     if email in otp_store and "last_sent" in otp_store[email]:
         if (now - otp_store[email]["last_sent"]).total_seconds() < 60:
@@ -122,7 +90,7 @@ def send_otp(email: str):
     expires_at = now + timedelta(minutes=10)
     otp_store[email] = {"otp": otp, "expires": expires_at, "last_sent": now}
 
-    html_body = f"""
+    html_content = f"""
     <html>
     <body style="font-family:'Poppins',sans-serif;background:#f0f4ff;padding:20px;text-align:center;">
         <div style="max-width:600px;margin:auto;background:#fff;padding:30px;border-radius:12px;box-shadow:0 8px 20px rgba(0,0,0,0.1);">
@@ -136,11 +104,17 @@ def send_otp(email: str):
     </body>
     </html>
     """
-    msg = Message(subject="Your Certificate Verification Code", recipients=[email], html=html_body)
-    Thread(target=send_async_email, args=(app, msg)).start()
 
-# ---------------- OTP CLEANUP THREAD ----------------
-def cleanup_expired_otps(interval_seconds: int = 60):
+    message = Mail(
+        from_email=Email(SENDER_EMAIL),
+        to_emails=To(email),
+        subject="Your Certificate Verification Code",
+        html_content=Content("text/html", html_content)
+    )
+    Thread(target=send_async_email, args=(message,)).start()
+
+# ---------------- OTP CLEANUP ----------------
+def cleanup_expired_otps(interval_seconds=60):
     while True:
         now = datetime.utcnow()
         expired = [email for email, data in otp_store.items() if now > data["expires"]]
@@ -176,7 +150,6 @@ def verify_otp_route():
     entered_otp = request.form.get('otp')
     now = datetime.utcnow()
     otp_entry = otp_store.get(gmail)
-
     if otp_entry:
         if now > otp_entry["expires"]:
             otp_store.pop(gmail)
@@ -186,7 +159,6 @@ def verify_otp_route():
             otp_store.pop(gmail)
             session.pop('pending_gmail')
             return render_template('index.html', certificates=certificates, status='success', gmail=gmail)
-
     return render_template('verify_otp.html', gmail=gmail, error="Invalid OTP. Please try again.")
 
 # ---------------- ADMIN ROUTES ----------------
@@ -219,23 +191,16 @@ def upload_certificate():
     course = request.form.get('course')
     title = request.form.get('title')
     file = request.files.get('certificate')
-
     if not gmail or not name or not course or not title or not file:
         return "Error: All fields are required!", 400
 
     encoded_data = base64.b64encode(file.read()).decode('utf-8')
-
-    try:
-        db = get_db()
-        cursor = db.cursor()
-        cursor.execute('''INSERT OR REPLACE INTO candidates 
-            (gmail, name, course, title, certificate_name, certificate_data) 
-            VALUES (?, ?, ?, ?, ?, ?)''',
-                       (gmail, name, course, title, file.filename, encoded_data))
-        db.commit()
-    except sqlite3.Error as e:
-        return f"Database error: {e}", 500
-
+    db = get_db()
+    db.execute('''INSERT OR REPLACE INTO candidates 
+                  (gmail, name, course, title, certificate_name, certificate_data) 
+                  VALUES (?, ?, ?, ?, ?, ?)''',
+               (gmail, name, course, title, file.filename, encoded_data))
+    db.commit()
     return redirect(url_for('dashboard'))
 
 @app.route('/download-certificate/<gmail>/<title>')
@@ -246,17 +211,6 @@ def download_certificate(gmail, title):
     name, data = cert
     decoded = base64.b64decode(data.encode('utf-8'))
     return send_file(io.BytesIO(decoded), as_attachment=True, download_name=name)
-
-@app.route('/delete-candidate/<gmail>')
-def delete_candidate(gmail):
-    try:
-        db = get_db()
-        cursor = db.cursor()
-        cursor.execute("DELETE FROM candidates WHERE gmail = ?", (gmail,))
-        db.commit()
-    except sqlite3.Error as e:
-        print(f"Error deleting candidate: {e}")
-    return redirect(url_for('dashboard'))
 
 @app.route('/logout')
 def logout():
