@@ -1,5 +1,6 @@
 Flask==2.2.5
 Flask-Mail==0.9.1
 gunicorn==21.2.0
-python-dotenv==1.0.0 
+python-dotenv==1.0.0
 Werkzeug>=2.3.7
+sendgrid==6.37.0
