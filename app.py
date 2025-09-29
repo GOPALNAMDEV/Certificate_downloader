@@ -11,6 +11,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail, Email, To, Content
+import requests  # for keep-alive ping
 
 # ---------------- LOAD ENV ----------------
 load_dotenv()
@@ -89,8 +90,7 @@ def send_otp(email):
     now = datetime.utcnow()
     if email in otp_store and "last_sent" in otp_store[email]:
         if (now - otp_store[email]["last_sent"]).total_seconds() < 60:
-            print(f"OTP recently sent to {email}, skipping re-send.")
-            return
+            return  # Skip re-send if recently sent
 
     otp = random.randint(100000, 999999)
     expires_at = now + timedelta(minutes=10)
@@ -129,6 +129,20 @@ def cleanup_expired_otps(interval_seconds=60):
         time.sleep(interval_seconds)
 
 Thread(target=cleanup_expired_otps, daemon=True).start()
+
+# ---------------- KEEP-ALIVE / PING ----------------
+def keep_alive(interval_seconds=300):
+    url = os.environ.get("APP_URL")  # Your Render app URL in .env
+    if not url:
+        return  # Do nothing if APP_URL not set
+    while True:
+        try:
+            requests.get(url, timeout=10)  # silent ping
+        except:
+            pass  # ignore errors
+        time.sleep(interval_seconds)
+
+Thread(target=keep_alive, daemon=True).start()
 
 # ---------------- INIT DB ----------------
 with app.app_context():
