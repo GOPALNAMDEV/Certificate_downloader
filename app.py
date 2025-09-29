@@ -17,7 +17,7 @@ load_dotenv()
 
 # ---------------- FLASK SETUP ----------------
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "Gopalnamdev@gmail.comGopal0369Namdev24012004")
+app.secret_key = os.environ.get("SECRET_KEY", "default_secret_key")
 
 # ---------------- ADMIN ----------------
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "recruitplusindia")
@@ -28,7 +28,7 @@ SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL")  # Verified sender in SendGrid
 
 # ---------------- DATABASE PATH ----------------
-DB_PATH = os.path.join(os.path.dirname(__file__), "candidates.db")
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "candidates.db")
 
 # ---------------- OTP STORE ----------------
 otp_store = {}  # {email: {"otp": int, "expires": datetime, "last_sent": datetime}}
@@ -61,7 +61,13 @@ def init_db():
 
 def get_all_candidates():
     db = get_db()
-    return db.execute("SELECT gmail, name, course, title, certificate_name, certificate_data FROM candidates").fetchall()
+    try:
+        return db.execute(
+            "SELECT gmail, name, course, title, certificate_name, certificate_data FROM candidates"
+        ).fetchall()
+    except sqlite3.OperationalError as e:
+        print("DB Error:", e)
+        return []
 
 def get_candidate_certificates(gmail):
     db = get_db()
@@ -181,6 +187,15 @@ def dashboard():
     candidates = get_all_candidates()
     return render_template('dashboard.html', candidates=candidates)
 
+@app.route('/delete-candidate/<gmail>')
+def delete_candidate(gmail):
+    if "admin_logged_in" not in session:
+        return redirect(url_for('login'))
+    db = get_db()
+    db.execute("DELETE FROM candidates WHERE gmail=?", (gmail,))
+    db.commit()
+    return redirect(url_for('dashboard'))
+
 @app.route('/upload-certificate', methods=['POST'])
 def upload_certificate():
     if "admin_logged_in" not in session:
@@ -229,4 +244,4 @@ def view_certificate(gmail, title):
 # ---------------- RUN ----------------
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=True)
