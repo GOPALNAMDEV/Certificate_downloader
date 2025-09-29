@@ -10,7 +10,7 @@
 * { margin:0; padding:0; box-sizing:border-box; font-family:'Inter',sans-serif; }
 
 body {
-background: linear-gradient(135deg, #d0f0ff, #ffffff, #e0f7ff);
+  background: linear-gradient(135deg, #d0f0ff, #ffffff, #e0f7ff);
   min-height:100vh;
   display:flex; justify-content:center; align-items:center;
   padding:20px;
@@ -196,12 +196,13 @@ button:not(.resend-btn):hover {
 
   <form action="/verify-otp" method="POST" id="otpForm">
     <div class="otp-inputs" id="otpInputs">
-      <input type="text" name="otp1" maxlength="1" required>
-      <input type="text" name="otp2" maxlength="1" required>
-      <input type="text" name="otp3" maxlength="1" required>
-      <input type="text" name="otp4" maxlength="1" required>
-      <input type="text" name="otp5" maxlength="1" required>
-      <input type="text" name="otp6" maxlength="1" required>
+      <!-- Numeric-only inputs -->
+      <input type="tel" inputmode="numeric" pattern="\d*" name="otp1" maxlength="1" required>
+      <input type="tel" inputmode="numeric" pattern="\d*" name="otp2" maxlength="1" required>
+      <input type="tel" inputmode="numeric" pattern="\d*" name="otp3" maxlength="1" required>
+      <input type="tel" inputmode="numeric" pattern="\d*" name="otp4" maxlength="1" required>
+      <input type="tel" inputmode="numeric" pattern="\d*" name="otp5" maxlength="1" required>
+      <input type="tel" inputmode="numeric" pattern="\d*" name="otp6" maxlength="1" required>
     </div>
     <!-- Hidden field to combine OTP for backend -->
     <input type="hidden" name="otp" id="combinedOtp">
@@ -227,14 +228,20 @@ const timerText = document.getElementById('timerText');
 
 // Auto-focus between inputs
 inputs.forEach((input, index) => {
-  input.addEventListener('input', () => { if(input.value && index<inputs.length-1) inputs[index+1].focus(); });
-  input.addEventListener('keydown', e => { if(e.key==="Backspace" && input.value==="" && index>0) inputs[index-1].focus(); });
+  input.addEventListener('input', () => { 
+    // Allow only digits
+    input.value = input.value.replace(/\D/, '');
+    if(input.value && index < inputs.length-1) inputs[index+1].focus(); 
+  });
+  input.addEventListener('keydown', e => { 
+    if(e.key==="Backspace" && input.value==="" && index>0) inputs[index-1].focus(); 
+  });
 });
 
-// Paste OTP
+// Paste OTP (digits only)
 inputs[0].addEventListener('paste', e => {
   e.preventDefault();
-  const pasteData = e.clipboardData.getData('text').trim().slice(0, inputs.length);
+  const pasteData = e.clipboardData.getData('text').replace(/\D/g,'').slice(0, inputs.length);
   pasteData.split('').forEach((c,i)=>inputs[i].value=c);
 });
 
@@ -266,7 +273,7 @@ form.addEventListener('submit', e => {
     successCheck.style.display='block';
 
     // Optional: delay to show success check before redirect
-    setTimeout(() => form.submit(), 1200); // submits to backend with combined OTP
+    setTimeout(() => form.submit(), 1200); 
   } else {
     otpContainer.classList.add('shake');
     setTimeout(()=>otpContainer.classList.remove('shake'),300);
