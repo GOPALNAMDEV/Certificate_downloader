@@ -171,11 +171,11 @@ def send_otp(email):
     </html>
     """
 
-    Thread(
-        target=send_email_smtp,
-        args=(email, "Your Certificate Verification Code", html_content),
-        daemon=True
-    ).start()
+    send_email_smtp(
+        email,
+        "Your Certificate Verification Code",
+        html_content
+    )
 
 # ---------------- OTP CLEANUP ----------------
 def cleanup_expired_otps():
