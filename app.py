@@ -1,12 +1,15 @@
 import os
 import sqlite3
+import base64
 import random
-import requests
+import io
 from datetime import datetime, timedelta
 
+import requests
 from flask import (
     Flask, request, render_template,
-    redirect, url_for, session, g
+    redirect, url_for, session,
+    send_file, Response, g
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
@@ -31,7 +34,7 @@ ADMIN_PASSWORD_HASH = generate_password_hash(
 )
 
 # ============================================================
-# SMTP2GO HTTP API CONFIG (SENDGRID-LIKE)
+# SMTP2GO HTTP API (SENDGRID-LIKE)
 # ============================================================
 SMTP2GO_API_KEY = os.environ.get("SMTP2GO_API_KEY")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
@@ -43,7 +46,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "candidates.db")
 
 # ============================================================
-# OTP STORE (IN-MEMORY)
+# OTP STORE (IN-MEMORY – SAME AS SENDGRID VERSION)
 # ============================================================
 otp_store = {}  # {email: {"otp": int, "expires": datetime, "last_sent": datetime}}
 
@@ -88,53 +91,52 @@ def get_candidate_certificates(gmail):
         (gmail,)
     ).fetchall()
 
+def get_certificate_data(gmail, title):
+    return get_db().execute(
+        "SELECT certificate_name, certificate_data FROM candidates WHERE gmail=? AND title=?",
+        (gmail, title)
+    ).fetchone()
+
 # ============================================================
 # SMTP2GO HTTP EMAIL (NO SMTP, NO THREADS)
 # ============================================================
-def send_email_api(to_email, subject, html_body, text_body=None):
+def send_email_api(to_email, subject, html_body):
     url = "https://api.smtp2go.com/v3/email/send"
-
     payload = {
         "api_key": SMTP2GO_API_KEY,
         "to": [to_email],
         "sender": SENDER_EMAIL,
         "subject": subject,
         "html_body": html_body,
-        "text_body": text_body or "Your email client does not support HTML"
+        "text_body": "Your email client does not support HTML"
     }
 
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        data = response.json()
-        print("📩 SMTP2GO RESPONSE:", data)
-        return data
+        r = requests.post(url, json=payload, timeout=10)
+        print("📩 SMTP2GO:", r.json())
     except Exception as e:
-        print("❌ SMTP2GO API ERROR:", e)
-        return None
+        print("❌ SMTP2GO ERROR:", e)
 
 # ============================================================
-# OTP LOGIC
+# OTP LOGIC (SENDGRID-STYLE SAFE)
 # ============================================================
 def send_otp(email):
     now = datetime.utcnow()
 
-    if email in otp_store:
-        if (now - otp_store[email]["last_sent"]).total_seconds() < 60:
-            return
+    if email in otp_store and (now - otp_store[email]["last_sent"]).total_seconds() < 60:
+        return
 
     otp = random.randint(100000, 999999)
-
     otp_store[email] = {
         "otp": otp,
         "expires": now + timedelta(minutes=10),
         "last_sent": now
     }
 
-    html_content = f"""
+    html = f"""
     <html>
     <body style="font-family:Arial;background:#f4f6fb;padding:20px;">
-      <div style="max-width:520px;margin:auto;background:#fff;
-                  padding:30px;border-radius:10px;">
+      <div style="max-width:520px;margin:auto;background:#fff;padding:30px;border-radius:10px;">
         <h2 style="color:#2563eb;">Certificate Verification Code</h2>
         <p>Your OTP is:</p>
         <h1 style="letter-spacing:4px;">{otp}</h1>
@@ -149,19 +151,8 @@ def send_otp(email):
     send_email_api(
         to_email=email,
         subject="Your Certificate Verification Code",
-        html_body=html_content,
-        text_body=f"Your OTP is {otp}"
+        html_body=html
     )
-
-# ============================================================
-# OTP CLEANUP
-# ============================================================
-@app.before_request
-def cleanup_otps():
-    now = datetime.utcnow()
-    expired = [e for e, d in otp_store.items() if now > d["expires"]]
-    for e in expired:
-        otp_store.pop(e, None)
 
 # ============================================================
 # INIT DB
@@ -192,23 +183,42 @@ def check_certificate():
 def verify_otp():
     gmail = session.get("pending_gmail")
     entered_otp = request.form.get("otp")
+    now = datetime.utcnow()
 
-    record = otp_store.get(gmail)
-    if not record:
-        return render_template("verify_otp.html", gmail=gmail, error="OTP expired")
+    if not gmail:
+        return render_template(
+            "verify_otp.html",
+            error="Session expired. Please try again."
+        )
 
-    if datetime.utcnow() > record["expires"]:
-        otp_store.pop(gmail, None)
-        return render_template("verify_otp.html", gmail=gmail, error="OTP expired")
+    otp_entry = otp_store.get(gmail)
 
-    if str(record["otp"]) != entered_otp:
-        return render_template("verify_otp.html", gmail=gmail, error="Invalid OTP")
+    if otp_entry:
+        if now > otp_entry["expires"]:
+            otp_store.pop(gmail, None)
+            session.pop("pending_gmail", None)
+            return render_template(
+                "verify_otp.html",
+                gmail=gmail,
+                error="OTP expired. Please request a new one."
+            )
 
-    otp_store.pop(gmail, None)
-    session.pop("pending_gmail", None)
+        if str(otp_entry["otp"]) == entered_otp:
+            certificates = get_candidate_certificates(gmail)
+            otp_store.pop(gmail, None)
+            session.pop("pending_gmail", None)
+            return render_template(
+                "index.html",
+                certificates=certificates,
+                status="success",
+                gmail=gmail
+            )
 
-    certificates = get_candidate_certificates(gmail)
-    return render_template("index.html", certificates=certificates, status="success", gmail=gmail)
+    return render_template(
+        "verify_otp.html",
+        gmail=gmail,
+        error="Invalid OTP. Please try again."
+    )
 
 # ============================================================
 # ADMIN
@@ -230,6 +240,51 @@ def dashboard():
     if not session.get("admin_logged_in"):
         return redirect(url_for("login"))
     return render_template("dashboard.html", candidates=get_all_candidates())
+
+@app.route("/upload-certificate", methods=["POST"])
+def upload_certificate():
+    if not session.get("admin_logged_in"):
+        return redirect(url_for("login"))
+
+    gmail = request.form.get("gmail")
+    name = request.form.get("name")
+    course = request.form.get("course")
+    title = request.form.get("title")
+    file = request.files.get("certificate")
+
+    if not all([gmail, name, course, title, file]):
+        return "All fields required", 400
+
+    encoded = base64.b64encode(file.read()).decode("utf-8")
+
+    db = get_db()
+    db.execute("""
+        INSERT OR REPLACE INTO candidates
+        (gmail, name, course, title, certificate_name, certificate_data)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (gmail, name, course, title, file.filename, encoded))
+    db.commit()
+
+    return redirect(url_for("dashboard"))
+
+@app.route("/download-certificate/<gmail>/<title>")
+def download_certificate(gmail, title):
+    cert = get_certificate_data(gmail, title)
+    if not cert:
+        return "Certificate not found", 404
+
+    name, data = cert
+    decoded = base64.b64decode(data.encode("utf-8"))
+    return send_file(io.BytesIO(decoded), as_attachment=True, download_name=name)
+
+@app.route("/view-certificate/<gmail>/<title>")
+def view_certificate(gmail, title):
+    cert = get_certificate_data(gmail, title)
+    if cert:
+        name, encoded = cert
+        pdf = base64.b64decode(encoded.encode("utf-8"))
+        return Response(pdf, mimetype="application/pdf")
+    return "Certificate not found", 404
 
 @app.route("/logout")
 def logout():
