@@ -1,54 +1,27 @@
-import os
-import sqlite3
-import base64
-import random
-import io
-import time
-import ssl
+import os, sqlite3, base64, random, io
 from datetime import datetime, timedelta, timezone
-
-from flask import (
-    Flask, request, render_template, redirect,
-    url_for, session, send_file, Response, g
-)
+from flask import Flask, request, render_template, redirect, url_for, session, send_file, Response, g
 from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
-import smtplib
-from email.message import EmailMessage
+import requests
 
-# ============================================================
-# LOAD ENV
-# ============================================================
+# ---------------- LOAD ENV ----------------
 load_dotenv()
 
-# ============================================================
-# FLASK SETUP
-# ============================================================
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "default_secret_key")
+app.secret_key = os.getenv("SECRET_KEY", "secret")
 
-# ============================================================
-# ADMIN
-# ============================================================
-ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "recruitplusindia")
-ADMIN_PASSWORD_HASH = generate_password_hash(
-    os.environ.get("ADMIN_PASSWORD", "Satendra@369N")
-)
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD_HASH = generate_password_hash(os.getenv("ADMIN_PASSWORD", "admin123"))
 
-# ============================================================
-# DATABASE
-# ============================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "candidates.db")
 
-# ============================================================
-# OTP STORE (in-memory, fast)
-# ============================================================
+MAIL_SERVICE_URL = os.getenv("MAIL_SERVICE_URL")
+
 otp_store = {}
 
-# ============================================================
-# DATABASE HELPERS
-# ============================================================
+# ---------------- DB ----------------
 def get_db():
     if "db" not in g:
         g.db = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -64,274 +37,134 @@ def close_db(exception):
 def init_db():
     db = get_db()
     db.execute("""
-        CREATE TABLE IF NOT EXISTS candidates (
-            gmail TEXT NOT NULL,
-            name TEXT NOT NULL,
-            course TEXT NOT NULL,
-            title TEXT NOT NULL,
-            certificate_name TEXT NOT NULL,
-            certificate_data TEXT NOT NULL,
-            PRIMARY KEY (gmail, title)
-        )
+    CREATE TABLE IF NOT EXISTS candidates (
+        gmail TEXT,
+        name TEXT,
+        course TEXT,
+        title TEXT,
+        certificate_name TEXT,
+        certificate_data TEXT,
+        PRIMARY KEY (gmail, title)
+    )
     """)
     db.commit()
 
-def get_all_candidates():
-    try:
-        return get_db().execute("""
-            SELECT gmail, name, course, title,
-                   certificate_name, certificate_data
-            FROM candidates
-        """).fetchall()
-    except Exception as e:
-        print("❌ DB ERROR:", e)
-        return []
+with app.app_context():
+    init_db()
 
-def get_candidate_certificates(gmail):
-    return get_db().execute(
-        "SELECT title, name, course FROM candidates WHERE gmail=?",
-        (gmail,)
-    ).fetchall()
-
-def get_certificate_data(gmail, title):
-    return get_db().execute(
-        "SELECT certificate_name, certificate_data FROM candidates WHERE gmail=? AND title=?",
-        (gmail, title)
-    ).fetchone()
-
-# ============================================================
-# SMTP (FAST + SAFE + RENDER-PROOF)
-# ============================================================
-def send_email_smtp(to_email, subject, html_content):
-    """
-    Guaranteed behaviour:
-    - Fails fast (no worker timeout)
-    - Uses STARTTLS (Hostinger-safe)
-    - Explicit TLS context
-    """
-
-    msg = EmailMessage()
-    msg["From"] = f"Recruit Plus India <{os.environ['SMTP_USER']}>"
-    msg["To"] = to_email
-    msg["Subject"] = subject
-    msg.set_content("Please view this email in HTML format.")
-    msg.add_alternative(html_content, subtype="html")
-
-    context = ssl.create_default_context()
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
-
-    try:
-        with smtplib.SMTP(
-            os.environ["SMTP_HOST"],
-            int(os.environ.get("SMTP_PORT", 587)),
-            timeout=12      # 🔥 critical: prevents gunicorn timeout
-        ) as server:
-            server.ehlo()
-            server.starttls(context=context)
-            server.ehlo()
-            server.login(
-                os.environ["SMTP_USER"],
-                os.environ["SMTP_PASS"]
-            )
-            server.send_message(msg)
-
-        print(f"✅ OTP EMAIL SENT → {to_email}")
-
-    except Exception as e:
-        # Never crash request
-        print("❌ SMTP EMAIL ERROR:", repr(e))
-
-# ============================================================
-# OTP LOGIC (SYNCHRONOUS – RENDER SAFE)
-# ============================================================
+# ---------------- OTP ----------------
 def send_otp(email):
     now = datetime.now(timezone.utc)
 
-    # rate limit
-    if email in otp_store:
-        if (now - otp_store[email]["last_sent"]).total_seconds() < 60:
-            print(f"⏳ OTP rate-limited for {email}")
-            return
+    if email in otp_store and (now - otp_store[email]["sent"]).total_seconds() < 60:
+        return
 
     otp = random.randint(100000, 999999)
     otp_store[email] = {
         "otp": otp,
         "expires": now + timedelta(minutes=10),
-        "last_sent": now
+        "sent": now
     }
 
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <body style="background:#f3f4f6;font-family:Segoe UI,Roboto,Arial,sans-serif;">
-      <table width="100%" cellpadding="0" cellspacing="0" style="padding:30px;">
-        <tr>
-          <td align="center">
-            <table width="600" style="background:#ffffff;border-radius:12px;padding:30px;
-                   box-shadow:0 10px 25px rgba(0,0,0,0.1);">
-              <tr>
-                <td align="center">
-                  <h2 style="color:#2563eb;">Certificate Verification Code</h2>
-                  <p>Your OTP is:</p>
-                  <div style="font-size:30px;font-weight:bold;letter-spacing:6px;color:#1d4ed8;">
-                    {otp}
-                  </div>
-                  <p>Valid for 10 minutes.</p>
-                  <hr>
-                  <p style="font-size:12px;color:#6b7280;">
-                    © {datetime.now().year} Recruit Plus India
-                  </p>
-                </td>
-              </tr>
-            </table>
-          </td>
-        </tr>
-      </table>
-    </body>
-    </html>
-    """
-
-    # 🔥 MUST be synchronous on Render
-    send_email_smtp(
-        email,
-        "Your Certificate Verification Code",
-        html_content
+    requests.post(
+        MAIL_SERVICE_URL,
+        json={"to": email, "otp": otp},
+        timeout=5
     )
 
-# ============================================================
-# INIT DB
-# ============================================================
-with app.app_context():
-    init_db()
-
-# ============================================================
-# ROUTES
-# ============================================================
+# ---------------- ROUTES ----------------
 @app.route("/")
 def index():
-    return render_template("index.html", certificates=None, status="info")
+    return render_template("index.html")
 
 @app.route("/check-certificate", methods=["POST"])
 def check_certificate():
     gmail = request.form.get("gmail")
-    certs = get_candidate_certificates(gmail)
+    certs = get_db().execute(
+        "SELECT title, name, course FROM candidates WHERE gmail=?", (gmail,)
+    ).fetchall()
 
     if certs:
         send_otp(gmail)
-        session["pending_gmail"] = gmail
+        session["pending"] = gmail
         return render_template("verify_otp.html", gmail=gmail)
 
-    return render_template("index.html", status="error", gmail=gmail)
+    return render_template("index.html", error="No certificates found")
 
 @app.route("/verify-otp", methods=["POST"])
-def verify_otp_route():
-    gmail = session.get("pending_gmail")
-    entered = request.form.get("otp")
-    entry = otp_store.get(gmail)
+def verify_otp():
+    gmail = session.get("pending")
+    otp = request.form.get("otp")
 
-    if entry:
-        if datetime.now(timezone.utc) > entry["expires"]:
-            otp_store.pop(gmail, None)
-            return render_template("verify_otp.html", gmail=gmail, error="OTP expired.")
+    data = otp_store.get(gmail)
+    if not data:
+        return "OTP expired"
 
-        if str(entry["otp"]) == entered:
-            certs = get_candidate_certificates(gmail)
-            otp_store.pop(gmail, None)
-            session.pop("pending_gmail", None)
-            return render_template(
-                "index.html",
-                certificates=certs,
-                status="success",
-                gmail=gmail
-            )
+    if datetime.now(timezone.utc) > data["expires"]:
+        return "OTP expired"
 
-    return render_template("verify_otp.html", gmail=gmail, error="Invalid OTP.")
+    if str(data["otp"]) == otp:
+        certs = get_db().execute(
+            "SELECT title, name, course FROM candidates WHERE gmail=?", (gmail,)
+        ).fetchall()
+        otp_store.pop(gmail)
+        return render_template("index.html", certificates=certs)
 
-# ============================================================
-# ADMIN
-# ============================================================
+    return "Invalid OTP"
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
         if (
-            request.form.get("username") == ADMIN_USERNAME
-            and check_password_hash(
-                ADMIN_PASSWORD_HASH,
-                request.form.get("password")
-            )
+            request.form["username"] == ADMIN_USERNAME
+            and check_password_hash(ADMIN_PASSWORD_HASH, request.form["password"])
         ):
-            session["admin_logged_in"] = True
-            return redirect(url_for("dashboard"))
-        return render_template("login.html", error="Invalid credentials")
+            session["admin"] = True
+            return redirect("/dashboard")
     return render_template("login.html")
 
 @app.route("/dashboard")
 def dashboard():
-    if "admin_logged_in" not in session:
-        return redirect(url_for("login"))
-    return render_template("dashboard.html", candidates=get_all_candidates())
-
-@app.route("/delete-candidate/<gmail>")
-def delete_candidate(gmail):
-    if "admin_logged_in" not in session:
-        return redirect(url_for("login"))
-    db = get_db()
-    db.execute("DELETE FROM candidates WHERE gmail=?", (gmail,))
-    db.commit()
-    return redirect(url_for("dashboard"))
+    if not session.get("admin"):
+        return redirect("/login")
+    rows = get_db().execute("SELECT * FROM candidates").fetchall()
+    return render_template("dashboard.html", candidates=rows)
 
 @app.route("/upload-certificate", methods=["POST"])
 def upload_certificate():
-    if "admin_logged_in" not in session:
-        return redirect(url_for("login"))
+    if not session.get("admin"):
+        return redirect("/login")
 
-    gmail = request.form.get("gmail")
-    name = request.form.get("name")
-    course = request.form.get("course")
-    title = request.form.get("title")
-    file = request.files.get("certificate")
+    f = request.files["certificate"]
+    encoded = base64.b64encode(f.read()).decode()
 
-    encoded = base64.b64encode(file.read()).decode()
-    db = get_db()
-    db.execute(
+    get_db().execute(
         "INSERT OR REPLACE INTO candidates VALUES (?, ?, ?, ?, ?, ?)",
-        (gmail, name, course, title, file.filename, encoded)
+        (
+            request.form["gmail"],
+            request.form["name"],
+            request.form["course"],
+            request.form["title"],
+            f.filename,
+            encoded,
+        ),
     )
-    db.commit()
-    return redirect(url_for("dashboard"))
+    get_db().commit()
+    return redirect("/dashboard")
 
-@app.route("/download-certificate/<gmail>/<title>")
-def download_certificate(gmail, title):
-    cert = get_certificate_data(gmail, title)
-    if not cert:
-        return "Certificate not found", 404
-    name, data = cert
+@app.route("/download/<gmail>/<title>")
+def download(gmail, title):
+    row = get_db().execute(
+        "SELECT certificate_name, certificate_data FROM candidates WHERE gmail=? AND title=?",
+        (gmail, title)
+    ).fetchone()
     return send_file(
-        io.BytesIO(base64.b64decode(data)),
+        io.BytesIO(base64.b64decode(row["certificate_data"])),
         as_attachment=True,
-        download_name=name
+        download_name=row["certificate_name"]
     )
-
-@app.route("/view-certificate/<gmail>/<title>")
-def view_certificate(gmail, title):
-    cert = get_certificate_data(gmail, title)
-    if cert:
-        _, data = cert
-        return Response(
-            base64.b64decode(data),
-            mimetype="application/pdf"
-        )
-    return "Certificate not found", 404
 
 @app.route("/logout")
 def logout():
     session.clear()
-    return redirect(url_for("index"))
-
-# ============================================================
-# RUN (LOCAL ONLY)
-# ============================================================
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    return redirect("/")
