@@ -1,9 +1,7 @@
 import os
 import sqlite3
 import random
-import time
-import smtplib
-from email.message import EmailMessage
+import requests
 from datetime import datetime, timedelta
 
 from flask import (
@@ -33,13 +31,10 @@ ADMIN_PASSWORD_HASH = generate_password_hash(
 )
 
 # ============================================================
-# SMTP2GO CONFIG  (RENDER SAFE)
+# SMTP2GO HTTP API CONFIG (SENDGRID-LIKE)
 # ============================================================
-SMTP_HOST = "mail.smtp2go.com"
-SMTP_PORT = 587
-SMTP_USERNAME = os.environ.get("SMTP_USERNAME")   # MUST be: apikey
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")   # SMTP2GO API KEY
-SENDER_EMAIL = os.environ.get("SENDER_EMAIL")     # no-reply@domain.com
+SMTP2GO_API_KEY = os.environ.get("SMTP2GO_API_KEY")
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
 
 # ============================================================
 # DATABASE
@@ -94,19 +89,28 @@ def get_candidate_certificates(gmail):
     ).fetchall()
 
 # ============================================================
-# SMTP EMAIL (RENDER SAFE – NO THREADS)
+# SMTP2GO HTTP EMAIL (NO SMTP, NO THREADS)
 # ============================================================
-def send_email(msg):
+def send_email_api(to_email, subject, html_body, text_body=None):
+    url = "https://api.smtp2go.com/v3/email/send"
+
+    payload = {
+        "api_key": SMTP2GO_API_KEY,
+        "to": [to_email],
+        "sender": SENDER_EMAIL,
+        "subject": subject,
+        "html_body": html_body,
+        "text_body": text_body or "Your email client does not support HTML"
+    }
+
     try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.send_message(msg)
-            print(f"✅ Email sent to {msg['To']}")
+        response = requests.post(url, json=payload, timeout=10)
+        data = response.json()
+        print("📩 SMTP2GO RESPONSE:", data)
+        return data
     except Exception as e:
-        print("❌ SMTP2GO ERROR:", e)
+        print("❌ SMTP2GO API ERROR:", e)
+        return None
 
 # ============================================================
 # OTP LOGIC
@@ -119,23 +123,18 @@ def send_otp(email):
             return
 
     otp = random.randint(100000, 999999)
+
     otp_store[email] = {
         "otp": otp,
         "expires": now + timedelta(minutes=10),
         "last_sent": now
     }
 
-    msg = EmailMessage()
-    msg["From"] = f"RecruitPlus <{SENDER_EMAIL}>"
-    msg["To"] = email
-    msg["Subject"] = "Your Certificate Verification Code"
-
-    msg.set_content(f"Your OTP is {otp}")
-
-    msg.add_alternative(f"""
+    html_content = f"""
     <html>
     <body style="font-family:Arial;background:#f4f6fb;padding:20px;">
-      <div style="max-width:520px;margin:auto;background:#fff;padding:30px;border-radius:10px;">
+      <div style="max-width:520px;margin:auto;background:#fff;
+                  padding:30px;border-radius:10px;">
         <h2 style="color:#2563eb;">Certificate Verification Code</h2>
         <p>Your OTP is:</p>
         <h1 style="letter-spacing:4px;">{otp}</h1>
@@ -145,12 +144,17 @@ def send_otp(email):
       </div>
     </body>
     </html>
-    """, subtype="html")
+    """
 
-    send_email(msg)
+    send_email_api(
+        to_email=email,
+        subject="Your Certificate Verification Code",
+        html_body=html_content,
+        text_body=f"Your OTP is {otp}"
+    )
 
 # ============================================================
-# OTP CLEANUP (LIGHTWEIGHT)
+# OTP CLEANUP
 # ============================================================
 @app.before_request
 def cleanup_otps():
