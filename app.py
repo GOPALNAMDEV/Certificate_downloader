@@ -9,8 +9,8 @@ from threading import Thread
 from flask import Flask, request, render_template, redirect, url_for, session, send_file, Response, g
 from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail, Email, To, Content
+import smtplib
+from email.message import EmailMessage
 
 # ---------------- LOAD ENV ----------------
 load_dotenv()
@@ -78,46 +78,80 @@ def get_certificate_data(gmail, title):
     return db.execute("SELECT certificate_name, certificate_data FROM candidates WHERE gmail=? AND title=?", (gmail, title)).fetchone()
 
 # ---------------- ASYNC SENDGRID EMAIL ----------------
-def send_async_email(message):
+# ---------------- SMTP MAIL SENDER ----------------
+def send_email_smtp(to_email, subject, html_content):
     try:
-        sg = SendGridAPIClient(SENDGRID_API_KEY)
-        sg.send(message)
-    except Exception as e:
-        print(f"SendGrid error: {e}")
+        msg = EmailMessage()
+        msg["From"] = f"Recruit Plus India <{os.environ['SMTP_USER']}>"
+        msg["To"] = to_email
+        msg["Subject"] = subject
+        msg.set_content("Please view this email in HTML format.")
+        msg.add_alternative(html_content, subtype="html")
 
+        with smtplib.SMTP(os.environ["SMTP_HOST"], int(os.environ["SMTP_PORT"])) as server:
+            server.starttls()
+            server.login(os.environ["SMTP_USER"], os.environ["SMTP_PASS"])
+            server.send_message(msg)
+
+    except Exception as e:
+        print("❌ SMTP Email Error:", e)
 def send_otp(email):
     now = datetime.utcnow()
+
     if email in otp_store and "last_sent" in otp_store[email]:
         if (now - otp_store[email]["last_sent"]).total_seconds() < 60:
-            print(f"OTP recently sent to {email}, skipping re-send.")
+            print(f"OTP recently sent to {email}, skipping.")
             return
 
     otp = random.randint(100000, 999999)
     expires_at = now + timedelta(minutes=10)
-    otp_store[email] = {"otp": otp, "expires": expires_at, "last_sent": now}
+
+    otp_store[email] = {
+        "otp": otp,
+        "expires": expires_at,
+        "last_sent": now
+    }
 
     html_content = f"""
+    <!DOCTYPE html>
     <html>
-    <body style="font-family:'Poppins',sans-serif;background:#f0f4ff;padding:20px;text-align:center;">
-        <div style="max-width:600px;margin:auto;background:#fff;padding:30px;border-radius:12px;box-shadow:0 8px 20px rgba(0,0,0,0.1);">
-            <h2 style="color:#0072ff;">Certificate Verification Code</h2>
-            <p>Hello,</p>
-            <p>Use the following code to verify your email and download your certificate:</p>
-            <div style="font-size:28px;font-weight:bold;color:#00c6ff;margin:20px 0;letter-spacing:4px;">{otp}</div>
-            <p>This code is valid for 10 minutes.</p>
-            <div style="margin-top:30px;font-size:12px;color:#888;">&copy; 2025 RecruitPlus India</div>
-        </div>
+    <body style="margin:0;padding:0;background:#f3f4f6;font-family:Segoe UI,Roboto,Arial,sans-serif;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="padding:30px;">
+        <tr>
+          <td align="center">
+            <table width="600" style="background:#ffffff;border-radius:12px;padding:30px;
+                   box-shadow:0 10px 25px rgba(0,0,0,0.1);">
+              <tr>
+                <td align="center">
+                  <h2 style="color:#2563eb;">Certificate Verification Code</h2>
+                  <p>Hello,</p>
+                  <p>Please use the OTP below to verify your email:</p>
+                  <div style="font-size:30px;font-weight:bold;
+                              letter-spacing:6px;color:#1d4ed8;margin:20px 0;">
+                    {otp}
+                  </div>
+                  <p>This code is valid for <strong>10 minutes</strong>.</p>
+                  <hr style="margin:30px 0;">
+                  <p style="font-size:12px;color:#6b7280;">
+                    © {datetime.now().year} Recruit Plus India<br>
+                    This is an automated email. Please do not reply.
+                  </p>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
     </body>
     </html>
     """
 
-    message = Mail(
-        from_email=Email(SENDER_EMAIL),
-        to_emails=To(email),
-        subject="Your Certificate Verification Code",
-        html_content=Content("text/html", html_content)
-    )
-    Thread(target=send_async_email, args=(message,)).start()
+    # 🔁 SEND IN BACKGROUND (FAST)
+    Thread(
+        target=send_email_smtp,
+        args=(email, "Your Certificate Verification Code", html_content),
+        daemon=True
+    ).start()
 
 # ---------------- OTP CLEANUP ----------------
 def cleanup_expired_otps(interval_seconds=60):
