@@ -4,9 +4,14 @@ import base64
 import random
 import io
 import time
-from datetime import datetime, timedelta
+import ssl
+from datetime import datetime, timedelta, timezone
 from threading import Thread
-from flask import Flask, request, render_template, redirect, url_for, session, send_file, Response, g
+
+from flask import (
+    Flask, request, render_template, redirect,
+    url_for, session, send_file, Response, g
+)
 from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 import smtplib
@@ -61,48 +66,50 @@ def init_db():
     db.commit()
 
 def get_all_candidates():
-    db = get_db()
     try:
-        return db.execute("""
-            SELECT gmail, name, course, title, certificate_name, certificate_data
+        return get_db().execute("""
+            SELECT gmail, name, course, title,
+                   certificate_name, certificate_data
             FROM candidates
         """).fetchall()
     except Exception as e:
-        print("DB Error:", e)
+        print("❌ DB ERROR:", e)
         return []
 
 def get_candidate_certificates(gmail):
-    db = get_db()
-    return db.execute(
+    return get_db().execute(
         "SELECT title, name, course FROM candidates WHERE gmail=?",
         (gmail,)
     ).fetchall()
 
 def get_certificate_data(gmail, title):
-    db = get_db()
-    return db.execute(
+    return get_db().execute(
         "SELECT certificate_name, certificate_data FROM candidates WHERE gmail=? AND title=?",
         (gmail, title)
     ).fetchone()
 
-# ---------------- SMTP EMAIL (RENDER SAFE) ----------------
+# ---------------- SMTP EMAIL (RENDER + HOSTINGER SAFE) ----------------
 def send_email_smtp(to_email, subject, html_content):
     try:
         msg = EmailMessage()
         msg["From"] = f"Recruit Plus India <{os.environ['SMTP_USER']}>"
         msg["To"] = to_email
         msg["Subject"] = subject
-
         msg.set_content("Please view this email in HTML format.")
         msg.add_alternative(html_content, subtype="html")
+
+        # 🔐 Explicit TLS context (CRITICAL)
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
 
         with smtplib.SMTP(
             os.environ["SMTP_HOST"],
             int(os.environ["SMTP_PORT"]),
-            timeout=30
+            timeout=40
         ) as server:
             server.ehlo()
-            server.starttls()        # 🔑 REQUIRED FOR 587
+            server.starttls(context=context)
             server.ehlo()
             server.login(
                 os.environ["SMTP_USER"],
@@ -110,19 +117,19 @@ def send_email_smtp(to_email, subject, html_content):
             )
             server.send_message(msg)
 
-        print(f"✅ OTP email sent to {to_email}")
+        print(f"✅ OTP EMAIL SENT → {to_email}")
 
     except Exception as e:
         print("❌ SMTP EMAIL ERROR:", repr(e))
 
-
 # ---------------- OTP SEND ----------------
 def send_otp(email):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
-    if email in otp_store and (now - otp_store[email]["last_sent"]).total_seconds() < 60:
-        print(f"⏳ OTP rate-limited for {email}")
-        return
+    if email in otp_store:
+        if (now - otp_store[email]["last_sent"]).total_seconds() < 60:
+            print(f"⏳ OTP rate-limited for {email}")
+            return
 
     otp = random.randint(100000, 999999)
     expires_at = now + timedelta(minutes=10)
@@ -145,17 +152,14 @@ def send_otp(email):
               <tr>
                 <td align="center">
                   <h2 style="color:#2563eb;">Certificate Verification Code</h2>
-                  <p>Hello,</p>
-                  <p>Please use the OTP below to verify your email:</p>
-                  <div style="font-size:30px;font-weight:bold;
-                              letter-spacing:6px;color:#1d4ed8;margin:20px 0;">
+                  <p>Please use the OTP below:</p>
+                  <div style="font-size:30px;font-weight:bold;letter-spacing:6px;color:#1d4ed8;">
                     {otp}
                   </div>
-                  <p>This code is valid for <strong>10 minutes</strong>.</p>
-                  <hr style="margin:30px 0;">
+                  <p>Valid for 10 minutes.</p>
+                  <hr>
                   <p style="font-size:12px;color:#6b7280;">
-                    © {datetime.now().year} Recruit Plus India<br>
-                    This is an automated email. Please do not reply.
+                    © {datetime.now().year} Recruit Plus India
                   </p>
                 </td>
               </tr>
@@ -176,7 +180,7 @@ def send_otp(email):
 # ---------------- OTP CLEANUP ----------------
 def cleanup_expired_otps():
     while True:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         expired = [k for k, v in otp_store.items() if now > v["expires"]]
         for k in expired:
             otp_store.pop(k, None)
@@ -196,30 +200,28 @@ def index():
 @app.route("/check-certificate", methods=["POST"])
 def check_certificate():
     gmail = request.form.get("gmail")
-    certificates = get_candidate_certificates(gmail)
-
-    if certificates:
+    certs = get_candidate_certificates(gmail)
+    if certs:
         send_otp(gmail)
         session["pending_gmail"] = gmail
         return render_template("verify_otp.html", gmail=gmail)
-
     return render_template("index.html", status="error", gmail=gmail)
 
 @app.route("/verify-otp", methods=["POST"])
 def verify_otp_route():
     gmail = session.get("pending_gmail")
-    entered_otp = request.form.get("otp")
+    entered = request.form.get("otp")
+    entry = otp_store.get(gmail)
 
-    otp_entry = otp_store.get(gmail)
-    if otp_entry:
-        if datetime.utcnow() > otp_entry["expires"]:
+    if entry:
+        if datetime.now(timezone.utc) > entry["expires"]:
             otp_store.pop(gmail, None)
             return render_template("verify_otp.html", gmail=gmail, error="OTP expired.")
-        if str(otp_entry["otp"]) == entered_otp:
-            certificates = get_candidate_certificates(gmail)
+        if str(entry["otp"]) == entered:
+            certs = get_candidate_certificates(gmail)
             otp_store.pop(gmail, None)
             session.pop("pending_gmail", None)
-            return render_template("index.html", certificates=certificates, status="success", gmail=gmail)
+            return render_template("index.html", certificates=certs, status="success", gmail=gmail)
 
     return render_template("verify_otp.html", gmail=gmail, error="Invalid OTP.")
 
@@ -264,12 +266,11 @@ def upload_certificate():
 
     encoded = base64.b64encode(file.read()).decode()
     db = get_db()
-    db.execute("""
-        INSERT OR REPLACE INTO candidates
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (gmail, name, course, title, file.filename, encoded))
+    db.execute(
+        "INSERT OR REPLACE INTO candidates VALUES (?, ?, ?, ?, ?, ?)",
+        (gmail, name, course, title, file.filename, encoded)
+    )
     db.commit()
-
     return redirect(url_for("dashboard"))
 
 @app.route("/download-certificate/<gmail>/<title>")
