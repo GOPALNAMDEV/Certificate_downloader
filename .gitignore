@@ -6,14 +6,3 @@ candidates/
 *.pyo 
 .vscode/ 
 *.DS_Store 
-__pycache__/ 
-*.pyc 
-*.pyo 
-*.pyd 
-*.db 
-*.sqlite3 
-.env 
-node_modules/ 
-*.log 
-.DS_Store 
-Thumbs.db 

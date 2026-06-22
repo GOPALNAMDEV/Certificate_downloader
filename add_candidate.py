@@ -1,65 +1,100 @@
 import sqlite3
 import os
-import base64
 
-DB_PATH = "candidates.db"
+DB_NAME = "candidates.db"
+UPLOAD_FOLDER = "candidates"
+
 
 def add_candidate(gmail, name, course, certificate_filename, title):
-    """Add a candidate to the database with their certificate stored as base64 string."""
+    """Add or update a candidate certificate."""
 
-    # Ensure the certificate file exists
-    certificate_path = os.path.abspath(certificate_filename)
-    if not os.path.isfile(certificate_path):
-        print(f"❌ Error: {certificate_filename} not found.")
+    # Create folder if missing
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+    # Full path only for checking file existence
+    full_path = os.path.join(UPLOAD_FOLDER, certificate_filename)
+
+    if not os.path.isfile(full_path):
+        print(f"❌ Error: '{certificate_filename}' not found in '{UPLOAD_FOLDER}' folder.")
         return
 
-    # Read and encode certificate as base64
-    with open(certificate_path, "rb") as f:
-        file_data = f.read()
-        encoded_data = base64.b64encode(file_data).decode('utf-8')
-        # Optional: truncate for storage preview
-        if len(encoded_data) > 1000:
-            encoded_data = encoded_data[:1000]
-
     try:
-        with sqlite3.connect(DB_PATH) as conn:
+        with sqlite3.connect(DB_NAME) as conn:
             cursor = conn.cursor()
-            # Ensure table exists
-            cursor.execute('''
+
+            # Create table if it doesn't exist
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS candidates (
-                    gmail TEXT,
-                    name TEXT,
-                    course TEXT,
-                    title TEXT,
-                    certificate_name TEXT,
-                    certificate_data TEXT,
+                    gmail TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    course TEXT NOT NULL,
+                    certificate_path TEXT NOT NULL,
+                    title TEXT NOT NULL,
                     PRIMARY KEY (gmail, title)
                 )
-            ''')
+            """)
 
-            # Check if record exists
-            cursor.execute("SELECT * FROM candidates WHERE gmail=? AND title=?", (gmail, title))
-            existing_cert = cursor.fetchone()
+            # Check existing record
+            cursor.execute(
+                "SELECT 1 FROM candidates WHERE gmail=? AND title=?",
+                (gmail, title)
+            )
 
-            if existing_cert:
-                print(f"⚠️ Certificate '{title}' for {gmail} already exists. Updating record.")
-                cursor.execute('''
-                    UPDATE candidates 
-                    SET name=?, course=?, certificate_name=?, certificate_data=? 
+            exists = cursor.fetchone()
+
+            if exists:
+                cursor.execute("""
+                    UPDATE candidates
+                    SET name=?,
+                        course=?,
+                        certificate_path=?
                     WHERE gmail=? AND title=?
-                ''', (name, course, certificate_filename, encoded_data, gmail, title))
+                """, (
+                    name,
+                    course,
+                    certificate_filename,  # store filename only
+                    gmail,
+                    title
+                ))
+
+                print(f"⚠️ Updated existing certificate '{title}' for {gmail}")
+
             else:
-                cursor.execute('''
-                    INSERT INTO candidates (gmail, name, course, title, certificate_name, certificate_data)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (gmail, name, course, title, certificate_filename, encoded_data))
+                cursor.execute("""
+                    INSERT INTO candidates
+                    (gmail, name, course, certificate_path, title)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    gmail,
+                    name,
+                    course,
+                    certificate_filename,  # store filename only
+                    title
+                ))
+
+                print(f"✅ Added {name} ({gmail})")
 
             conn.commit()
-            print(f"✅ Candidate {name} ({gmail}) added with certificate '{title}'.")
 
     except sqlite3.Error as e:
-        print(f"⚠️ Database error: {e}")
+        print(f"❌ Database error: {e}")
 
-# Example usage
-add_candidate('testuser@gmail.com', 'John Doe', 'Python Development', 'testuser_certificate.pdf', 'Internship Completion')
-add_candidate('testuser2@gmail.com', 'Alice Smith', 'Data Science', 'testuser_certificate_2.pdf', 'Completion Certificate')
+
+# Example records
+if __name__ == "__main__":
+
+    add_candidate(
+        gmail="testuser@gmail.com",
+        name="John Doe",
+        course="Python Development",
+        certificate_filename="testuser_certificate.pdf",
+        title="Internship Completion"
+    )
+
+    add_candidate(
+        gmail="testuser2@gmail.com",
+        name="Alice Smith",
+        course="Data Science",
+        certificate_filename="testuser_certificate_2.pdf",
+        title="Completion Certificate"
+    )
