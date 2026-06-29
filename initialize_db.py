@@ -1,18 +1,27 @@
-import sqlite3
 import os
+import sqlite3
 
-# Path to the SQLite database (can be relative or absolute)
-DB_PATH = os.path.join(os.path.dirname(__file__), "candidates.db")
+# ============================================================
+# DATABASE CONFIGURATION
+# ============================================================
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "candidates.db")
+
+
+def get_connection():
+    """Create and return a database connection."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
 
 def init_db():
-    """
-    Initialize the candidates table.
-    This function is safe to run multiple times.
-    """
+    """Create the candidates table if it doesn't exist."""
+
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
+        with get_connection() as conn:
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS candidates (
                     gmail TEXT NOT NULL,
                     name TEXT NOT NULL,
@@ -22,31 +31,37 @@ def init_db():
                     certificate_data TEXT NOT NULL,
                     PRIMARY KEY (gmail, title)
                 )
-            ''')
+            """)
             conn.commit()
-            print("✅ Database initialized successfully.")
+
+        print("✅ Database initialized successfully.")
+
     except sqlite3.Error as e:
-        print(f"⚠️ Database error: {e}")
+        print(f"❌ Database initialization failed: {e}")
+
 
 def get_certificates(gmail):
     """
-    Fetch certificates from the database for the given Gmail.
-    Returns a list of tuples: (title, certificate_name)
+    Return all certificates belonging to a Gmail address.
     """
+
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT title, certificate_name 
-                FROM candidates 
+        with get_connection() as conn:
+            rows = conn.execute("""
+                SELECT
+                    title,
+                    certificate_name
+                FROM candidates
                 WHERE gmail = ?
-            ''', (gmail,))
-            certificates = cursor.fetchall()
-        return certificates
+                ORDER BY title
+            """, (gmail,)).fetchall()
+
+        return rows
+
     except sqlite3.Error as e:
-        print(f"⚠️ Database error: {e}")
+        print(f"❌ Database error: {e}")
         return []
 
+
 if __name__ == "__main__":
-    # Run this file directly to initialize the database
     init_db()

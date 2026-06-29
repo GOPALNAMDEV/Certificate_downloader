@@ -4,15 +4,17 @@ import base64
 import random
 import io
 from datetime import datetime, timedelta
-
+import mimetypes
 import requests
 from flask import (
     Flask, request, render_template,
     redirect, url_for, session,
     send_file, Response, g
 )
+from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
+from functools import wraps
 
 # ============================================================
 # LOAD ENV (local only – Render uses dashboard env vars)
@@ -82,7 +84,7 @@ def init_db():
 
 def get_all_candidates():
     return get_db().execute(
-        "SELECT gmail, name, course, title, certificate_name, certificate_data FROM candidates"
+        "SELECT gmail, name, course, title, certificate_name FROM candidates ORDER BY gmail,title"
     ).fetchall()
 
 def get_candidate_certificates(gmail):
@@ -96,7 +98,28 @@ def get_certificate_data(gmail, title):
         "SELECT certificate_name, certificate_data FROM candidates WHERE gmail=? AND title=?",
         (gmail, title)
     ).fetchone()
+ALLOWED_EXTENSIONS = {
+    "pdf",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "bmp",
+    "webp",
+    "doc",
+    "docx",
+    "xls",
+    "xlsx",
+    "ppt",
+    "pptx",
+    "txt"
+}
 
+def allowed_file(filename):
+    return (
+        "." in filename and
+        filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+    )
 # ============================================================
 # SMTP2GO HTTP EMAIL (NO SMTP, NO THREADS)
 # ============================================================
@@ -235,12 +258,20 @@ def login():
         return render_template("login.html", error="Invalid credentials")
     return render_template("login.html")
 
+def admin_required(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not session.get("admin_logged_in"):
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return wrapper
 @app.route("/dashboard")
+@admin_required
 def dashboard():
-    if not session.get("admin_logged_in"):
-        return redirect(url_for("login"))
-    return render_template("dashboard.html", candidates=get_all_candidates())
-
+    return render_template(
+        "dashboard.html",
+        candidates=get_all_candidates()
+    )
 @app.route("/upload-certificate", methods=["POST"])
 def upload_certificate():
     if not session.get("admin_logged_in"):
@@ -252,9 +283,18 @@ def upload_certificate():
     title = request.form.get("title")
     file = request.files.get("certificate")
 
-    if not all([gmail, name, course, title, file]):
-        return "All fields required", 400
+    if (
+        not gmail or
+        not name or
+        not course or
+        not title or
+        not file or
+        file.filename == ""
+    ):
+        if not allowed_file(file.filename):
+         return "Unsupported file type.", 400
 
+    filename = secure_filename(file.filename)
     encoded = base64.b64encode(file.read()).decode("utf-8")
 
     db = get_db()
@@ -262,7 +302,7 @@ def upload_certificate():
         INSERT OR REPLACE INTO candidates
         (gmail, name, course, title, certificate_name, certificate_data)
         VALUES (?, ?, ?, ?, ?, ?)
-    """, (gmail, name, course, title, file.filename, encoded))
+    """, (gmail, name, course, title, filename, encoded))
     db.commit()
 
     return redirect(url_for("dashboard"))
@@ -270,25 +310,61 @@ def upload_certificate():
 @app.route("/download-certificate/<gmail>/<title>")
 def download_certificate(gmail, title):
     cert = get_certificate_data(gmail, title)
+
     if not cert:
         return "Certificate not found", 404
 
-    name, data = cert
-    decoded = base64.b64decode(data.encode("utf-8"))
-    return send_file(io.BytesIO(decoded), as_attachment=True, download_name=name)
+    filename, encoded = cert
 
+    file_data = base64.b64decode(encoded)
+
+    mime_type, _ = mimetypes.guess_type(filename)
+
+    if mime_type is None:
+        mime_type = "application/octet-stream"
+
+    return send_file(
+        io.BytesIO(file_data),
+        mimetype=mime_type,
+        as_attachment=True,
+        download_name=filename
+    )
 @app.route("/view-certificate/<gmail>/<title>")
 def view_certificate(gmail, title):
     cert = get_certificate_data(gmail, title)
-    if cert:
-        name, encoded = cert
-        pdf = base64.b64decode(encoded.encode("utf-8"))
-        return Response(pdf, mimetype="application/pdf")
-    return "Certificate not found", 404
+
+    if not cert:
+        return "Certificate not found", 404
+
+    filename, encoded = cert
+
+    file_data = base64.b64decode(encoded)
+
+    mime_type, _ = mimetypes.guess_type(filename)
+
+    if mime_type is None:
+        mime_type = "application/octet-stream"
+
+    return Response(file_data, mimetype=mime_type)
+@app.route("/delete-certificate/<gmail>/<title>")
+@admin_required
+def delete_candidate(gmail, title):
+
+    db = get_db()
+
+    db.execute(
+        "DELETE FROM candidates WHERE gmail=? AND title=?",
+        (gmail, title)
+    )
+
+    db.commit()
+
+    return redirect(url_for("dashboard"))
 
 @app.route("/logout")
 def logout():
-    session.clear()
+    session.pop("admin_logged_in", None)
+    session.pop("pending_gmail", None)
     return redirect(url_for("index"))
 
 # ============================================================
