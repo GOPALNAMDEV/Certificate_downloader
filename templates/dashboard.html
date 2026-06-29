@@ -125,28 +125,56 @@
 </nav>
 
 <div class="container">
-    <h2>Candidate Certificates</h2>
+    <h2>
+Candidate Certificates
+({{ candidates|length }})
+</h2>
     <table>
         <tr>
             <th>Email</th>
-            <th>Certificate</th>
+            <th>Name</th>
+            <th>Course</th>
+            <th>Title</th>
+            <th>File</th>
             <th>Actions</th>
         </tr>
         {% for candidate in candidates %}
         <tr>
-            <td>{{ candidate[0] }}</td>
-            <td>
-                <a class="action-btn" href="{{ url_for('view_certificate', gmail=candidate[0], title=candidate[3]) }}" target="_blank">View</a>
-                <a class="action-btn" href="{{ url_for('download_certificate', gmail=candidate[0], title=candidate[3]) }}">Download</a>
-            </td>
-            <td>
-                <a class="action-btn delete-btn" href="{{ url_for('delete_candidate', gmail=candidate[0]) }}">Delete</a>
-            </td>
+<td>{{ candidate[0] }}</td>
+<td>{{ candidate[1] }}</td>
+<td>{{ candidate[2] }}</td>
+<td>{{ candidate[3] }}</td>
+<td>{{ candidate[4] }}</td>
+
+<td>
+    <a class="action-btn"
+       href="{{ url_for('view_certificate',
+       gmail=candidate[0],
+       title=candidate[3]) }}"
+       target="_blank">
+       View
+    </a>
+
+    <a class="action-btn"
+       href="{{ url_for('download_certificate',
+       gmail=candidate[0],
+       title=candidate[3]) }}">
+       Download
+    </a>
+
+    <a class="action-btn delete-btn"
+       href="{{ url_for('delete_candidate',
+       gmail=candidate[0],
+       title=candidate[3]) }}"
+       onclick="return confirm('Delete this certificate?');">
+       Delete
+    </a>
+</td>
         </tr>
         {% endfor %}
         {% if candidates|length == 0 %}
         <tr>
-            <td colspan="3" style="text-align:center; color:#555;">No certificates uploaded yet.</td>
+            <td colspan="6" style="text-align:center; color:#555;">No certificates uploaded yet.</td>
         </tr>
         {% endif %}
     </table>
@@ -154,7 +182,13 @@
     <h3>Upload New Certificate</h3>
     <form method="POST" action="{{ url_for('upload_certificate') }}" enctype="multipart/form-data">
         <label for="gmail">Enter Gmail:</label>
-        <input type="email" id="gmail" name="gmail" required>
+        <input
+    type="email"
+    id="gmail"
+    name="gmail"
+    autocomplete="email"
+    maxlength="255"
+    required>
 
         <label for="name">Full Name:</label>
         <input type="text" id="name" name="name" required>
@@ -166,9 +200,16 @@
         <input type="text" id="title" name="title" required>
 
         <label for="certificate">Upload Certificate:</label>
-        <input type="file" id="certificate" name="certificate" required>
+<input
+type="file"
+id="certificate"
+name="certificate"
+accept=".pdf,.png,.jpg,.jpeg,.gif,.bmp,.webp,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt"
+required>
 
-        <button type="submit">Upload Certificate</button>
+        <button
+type="submit"
+onclick="this.disabled=true;this.form.submit();">Upload Certificate</button>
     </form>
 </div>
 
